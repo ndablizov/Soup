@@ -495,7 +495,7 @@ training:
   neftune_alpha: 5.0  # Noise intensity (0-50, typically 5-15)
 ```
 
-Works with SFT, DPO, KTO, ORPO, SimPO, and IPO tasks.
+Applied by exactly these tasks: `sft`, `tts` (trains through the SFT trainer), `dpo`, `ipo`, `kto`, `orpo`, `simpo`, `bco`, and `preference` (through the loss it selects). On every other task the field is refused at config load, because no other trainer reads it and the run would train without the noise; any value counts as set, `0.0` included, so remove the key rather than zeroing it. On `backend: mlx` the field loads but MLX SFT does not apply it: the trainer warns at start and `soup doctor --config` lists it as ignored.
 
 
 ## Sample Packing

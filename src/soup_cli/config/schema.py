@@ -4796,6 +4796,18 @@ SFT_KERNEL_AWARE_TASKS: frozenset[str] = frozenset({"sft", "tts"})
 # precedent).
 AMP_APPLYING_TASKS: frozenset[str] = frozenset({"sft", "tts"})
 
+#: #1820 — the tasks whose trainer forwards ``training.neftune_alpha`` to
+#: ``TrainingArguments.neftune_noise_alpha``: the seven wrappers that read it
+#: (``sft.py``, inherited by ``tts.py`` through ``super()``; ``dpo.py``,
+#: ``ipo.py``, ``kto.py``, ``orpo.py``, ``simpo.py``, ``bco.py``) and
+#: ``preference``, which delegates to one of the last six. The other 14 tasks
+#: never read the field, so a value there is refused rather than silently
+#: trained without. Its own name, so that it cannot be coupled to another
+#: task set by accident (the #1618 / #1532 precedent).
+NEFTUNE_APPLYING_TASKS: frozenset[str] = frozenset({
+    "sft", "tts", "dpo", "ipo", "kto", "orpo", "simpo", "bco", "preference",
+})
+
 
 # #795: trainers that load the base unquantised and never read
 # ``training.quantization``.
@@ -6080,6 +6092,30 @@ class SoupConfig(BaseModel):
                 f"picks bf16/fp16 from the model and GPU ('tts' trains through "
                 f"the SFT trainer), so this run would train at the trainer's "
                 f"default precision. Use task='sft', or remove the key."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_neftune_alpha_task_gate(self) -> "SoupConfig":
+        """#1820: ``neftune_alpha`` is forwarded to TrainingArguments by the
+        SFT-family wrapper (sft.py, inherited by tts.py), by the six preference
+        wrappers (dpo / ipo / kto / orpo / simpo / bco) and so by ``preference``,
+        which delegates to one of them. The other 14 tasks never read the field,
+        so a run there trained without NEFTune noise and nothing said so; refuse
+        at load instead. Any value counts as set, ``0.0`` included: the applying
+        wrappers forward the field on ``is not None``, and the gate uses the
+        same test. The ``null`` default (what a dumped config or a recipe
+        snapshot writes) keeps loading everywhere.
+        """
+        alpha = self.training.neftune_alpha
+        if alpha is not None and self.task not in NEFTUNE_APPLYING_TASKS:
+            raise ValueError(
+                f"training.neftune_alpha={alpha!r} is not applied by "
+                f"task={self.task!r}: only task in {sorted(NEFTUNE_APPLYING_TASKS)} "
+                f"forwards it to the trainer ('tts' trains through the SFT trainer, "
+                f"'preference' through the loss it selects), so this run would train "
+                f"without NEFTune noise. Any value counts as set, 0.0 included; "
+                f"remove the key, or use one of those tasks."
             )
         return self
 
