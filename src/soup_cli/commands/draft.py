@@ -141,6 +141,24 @@ def _vocab_size_of(model_id: str, trc: bool = False) -> int:
     return int(vocab)
 
 
+def _fail_config_unreadable(exc: BaseException) -> NoReturn:
+    """Report a model-config read failure and exit 1.
+
+    An ``ImportError`` here is a core-only install (``_vocab_size_of`` imports
+    transformers lazily), so it carries the install hint the other commands
+    print; any other failure keeps the plain message (#1830). The hint goes
+    through ``_fail``, which escapes it, so Rich cannot read ``[train]`` as a
+    markup tag and print ``pip install "soup-cli"`` — a command that installs
+    the package WITHOUT the extra the user is missing.
+    """
+    if isinstance(exc, ImportError):
+        _fail(
+            f"could not read model config: {exc}. Reading a model config needs "
+            f'the training stack; install with: pip install "soup-cli[train]"'
+        )
+    _fail(f"could not read model config: {exc}")
+
+
 def _pair_vocab_sizes_or_fail(
     target: str, draft_id: str, target_trc: bool, draft_trc: bool
 ) -> "tuple[int, int]":
@@ -157,7 +175,7 @@ def _pair_vocab_sizes_or_fail(
             _vocab_size_of(draft_id, draft_trc),
         )
     except Exception as exc:  # noqa: BLE001 — surface as a friendly CLI error
-        _fail(f"could not read model config: {exc}")
+        _fail_config_unreadable(exc)
 
 
 def _write_draft_report(report: AcceptanceReport, output: str) -> None:
@@ -617,7 +635,7 @@ def distill(
         target_vocab = _vocab_size_of(target, target_trc)
         draft_vocab = _vocab_size_of(draft_base, draft_trc)
     except Exception as exc:  # noqa: BLE001 — surface as a friendly CLI error
-        _fail(f"could not read model config: {exc}")
+        _fail_config_unreadable(exc)
 
     cross_tokenizer = target_vocab != draft_vocab
     if not cross_tokenizer:
