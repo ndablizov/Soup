@@ -3070,11 +3070,40 @@ class TrainingConfig(BaseModel):
         default=False,
         description="Enable FlashAttention (auto-detects v2/v3/v4 for faster attention)",
     )
-    # Performance — Ring FlashAttention (sequence parallelism)
+    # Performance — Ring FlashAttention (sequence parallelism). Refused at config
+    # load until a trainer applies it (#2044); see _refuse_ring_attention.
     use_ring_attention: bool = Field(
         default=False,
-        description="Enable Ring FlashAttention for sequence parallelism across GPUs",
+        description=(
+            "Refused at config load (#2044): no trainer sets up Ring FlashAttention "
+            "or sequence parallelism, so a run that passed its checks trained with "
+            "ordinary attention. To extend the context, use rope_scaling_type."
+        ),
     )
+
+    @field_validator("use_ring_attention")
+    @classmethod
+    def _refuse_ring_attention(cls, value: bool) -> bool:
+        """#2044 — refuse ``use_ring_attention: true`` until a trainer applies it.
+
+        ``soup train`` validated the flag (CUDA, ``ring-flash-attn`` importable, two
+        GPUs, ``max_length >= 8192``) and then no trainer on any task or backend read
+        it: nothing set up ring attention or sequence parallelism, and each rank held
+        the whole sequence under the default attention. Runs after pydantic's bool
+        coercion, so every spelling read as true is refused. The validator in
+        ``utils/ring_attention.py`` and the mutual-exclusion checks stay in place,
+        unreachable, for the real implementation.
+        """
+        if value:
+            raise ValueError(
+                "training.use_ring_attention: true is refused (#2044): no Soup trainer "
+                "applies Ring FlashAttention or sequence parallelism, so the run would "
+                "train with ordinary attention, every GPU holding the whole sequence. "
+                "It stays refused until a trainer wires it. To extend the context, set "
+                "training.rope_scaling_type (linear, dynamic, yarn or llama3; task sft, "
+                "tts or pretrain); remove use_ring_attention or set it to false."
+            )
+        return value
     # Long-context — RoPE scaling
     rope_scaling_type: Optional[
         Literal["linear", "dynamic", "yarn", "llama3"]
@@ -9039,7 +9068,6 @@ training:
   rope_scaling_type: dynamic
   use_flash_attn: true
   # use_liger: true       # pip install "soup-cli[liger]" for fused ops
-  # use_ring_attention: true  # Multi-GPU sequence parallelism
 
 output: ./output_longctx
 """,

@@ -183,7 +183,8 @@ _OLDER_GATES = {
     "task-sft-only": {"task": "dpo"},
     "backend-mlx": {"base": "mlx-community/Llama-3.1-8B-Instruct-4bit", "backend": "mlx"},
     "backend-unsloth": {"backend": "unsloth"},
-    "ring-attention": {"training_extra": "  use_ring_attention: true\n"},
+    # The LongLoRA x Ring Attention exclusion is not listed: use_ring_attention: true
+    # is itself refused at config load since #2044, so no config reaches that gate.
     "full-ft-lora-conflict": {"training_extra": "  lora: {r: 0}\n"},
     "spectrum-lora-conflict": {
         "training_extra": "  unfrozen_parameters: [model.layers.0.mlp.down_proj]\n"

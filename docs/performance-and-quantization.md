@@ -1272,7 +1272,6 @@ training:
 
   # Long-context (128k+ tokens)
   rope_scaling_type: dynamic  # RoPE scaling: linear, dynamic, yarn, llama3; sft/tts/pretrain on backend: transformers only
-  # use_ring_attention: true  # Sequence parallelism across GPUs
 
 data:
   max_length: 131072          # Up to 1M tokens supported
@@ -1283,8 +1282,13 @@ Install optional performance packages:
 ```bash
 pip install "soup-cli[liger]"     # Liger Kernel fused operations
 pip install flash-attn --no-build-isolation  # FlashAttention
-pip install "soup-cli[ring-attn]" # Ring FlashAttention (sequence parallelism)
 ```
+
+`training.use_ring_attention: true` is refused at config load (#2044): `soup train`
+checked the Ring FlashAttention install and GPU count, but no trainer set up ring
+attention or sequence parallelism, so a run that passed the checks trained with
+ordinary attention. It stays refused until a trainer wires it; the `[ring-attn]`
+extra still installs the package.
 
 
 ## Live CUDA Batch-Size Probe

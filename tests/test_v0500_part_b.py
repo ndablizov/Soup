@@ -182,8 +182,10 @@ def test_soupconfig_long_context_grpo_happy():
 
 
 def test_soupconfig_long_context_grpo_with_ring_attention_rejected():
+    # use_ring_attention: true is itself refused at load since #2044, ahead of the
+    # mutual-exclusion check (still pinned on validate_long_context_grpo above).
     yaml = _grpo_yaml("  long_context_grpo: true\n  use_ring_attention: true\n")
-    with pytest.raises((ValidationError, ValueError), match="mutually exclusive"):
+    with pytest.raises((ValidationError, ValueError), match="#2044"):
         load_config_from_string(yaml)
 
 

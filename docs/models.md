@@ -155,7 +155,7 @@ spelling is unchanged. See [the README's install section](../README.md#1-install
 | `data-pro` | `pip install "soup-cli[data-pro]"` | Language detection + PII (langdetect, presidio) |
 | `deepspeed` | `pip install "soup-cli[deepspeed]"` | Multi-GPU training (DeepSpeed ZeRO) |
 | `liger` | `pip install "soup-cli[liger]"` | Liger Kernel fused ops |
-| `ring-attn` | `pip install "soup-cli[ring-attn]"` | Ring FlashAttention (sequence parallelism) |
+| `ring-attn` | `pip install "soup-cli[ring-attn]"` | Ring FlashAttention package; `training.use_ring_attention` is refused until a trainer applies it (#2044) |
 | `onnx` / `tensorrt` | `pip install "soup-cli[onnx]"` | ONNX / TensorRT-LLM export |
 | `awq` / `gptq` | `pip install "soup-cli[awq]"` | AWQ / GPTQ quantized export; not installable alongside `[train]` (see below) |
 | `trackers` | `pip install "soup-cli[trackers]"` | MLflow / SwanLab / Trackio logging |

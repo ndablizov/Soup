@@ -320,8 +320,6 @@ class MLXSFTTrainerWrapper:
             unsupported.append(
                 "training.use_lorafa (LoRA-FA has no MLX implementation)"
             )
-        if tcfg.use_ring_attention:
-            unsupported.append("Ring Attention")
         if tcfg.use_flash_attn:
             unsupported.append("FlashAttention (MLX has its own attention kernels)")
         if tcfg.use_liger:

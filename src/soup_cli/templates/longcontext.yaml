@@ -27,6 +27,5 @@ training:
   rope_scaling_type: dynamic
   use_flash_attn: true
   # use_liger: true       # pip install "soup-cli[liger]" for fused ops
-  # use_ring_attention: true  # Multi-GPU sequence parallelism
 
 output: ./output_longctx
