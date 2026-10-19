@@ -174,10 +174,15 @@ format-v2 metadata records a `local-sha256:` identity derived from the
 (including `additional_chat_templates/*.jinja`), and the weight file that
 Transformers selects (or its index and referenced shards). The identity uses
 relative file names and content, so moving the same base keeps resume valid;
-changing a selected file refuses resume. Soup checks the identity before and
-after loading the model. A first resume from a format-v1 checkpoint reuses the
-identity the run already computed instead of reading the base a third time
-(#1199).
+changing a selected file refuses resume. Soup reads and hashes a local base
+once per run, before loading the model, and refuses the run if the base changed
+while the model was loading. That after-load check compares each selected
+file's device, inode, size and modification time, and which files the loader
+would select, instead of hashing every byte again (#1199): it does not catch a
+same-size rewrite in place that also restores the modification time, while
+touching a selected file during the load is refused even when its bytes are the
+same. A first resume from a format-v1 checkpoint reuses the identity the run
+already computed instead of reading the base again (#1199).
 A local base whose `config.json` declares another
 layer count or an incompatible width is refused before any file is hashed; a
 value that is missing or not an integer is left to the post-load gate. The

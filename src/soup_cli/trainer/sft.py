@@ -647,6 +647,7 @@ class SFTTrainerWrapper(StreamingSetupMixin):
         self._is_raft = False  # set in setup() when data.format == 'raft'
         self._quest_metadata: Optional[dict[str, Any]] = None
         self._quest_base_identity_before: Optional[str] = None
+        self._quest_base_snapshot: Any = None
         # Resolve once — raises ValueError if model needs custom code but
         # the user did not opt in. Result is cached on the wrapper for use
         # by every from_pretrained() call below.
@@ -1281,6 +1282,27 @@ class SFTTrainerWrapper(StreamingSetupMixin):
                 QuestMetadataCallback(self._output_dir, self._quest_metadata)
             )
 
+    def _quest_post_load_base_identity(self) -> str:
+        """The base identity after the load, refusing a base that changed during it.
+
+        With the pre-load snapshot (#1199 fix 1) this is a stat comparison and reuses
+        the pre-load digest, so a local base is read once per run. Without one (a Hub
+        base, whose identity is its id, or a wrapper whose pre-load pass did not run) it
+        resolves the identity again and compares, as before.
+        """
+        from soup_cli.utils.quest import local_base_unchanged, resolve_base_model_identity
+
+        before = getattr(self, "_quest_base_identity_before", None)
+        snapshot = getattr(self, "_quest_base_snapshot", None)
+        if before is not None and snapshot is not None:
+            if not local_base_unchanged(self.config.base, snapshot):
+                raise ValueError("QuEST local base changed while the model was loading")
+            return before
+        base_identity = resolve_base_model_identity(self.config.base)
+        if before is not None and before != base_identity:
+            raise ValueError("QuEST local base changed while the model was loading")
+        return base_identity
+
     def _setup_quest(self, train_ds: Any) -> None:
         """Calibrate and install #674's explicit mixed fake-quant route."""
         from pathlib import Path
@@ -1299,7 +1321,6 @@ class SFTTrainerWrapper(StreamingSetupMixin):
             calibration_rows_sha256,
             install_mixed_quest,
             load_metadata,
-            resolve_base_model_identity,
             restore_mixed_quest,
             validate_cuda_hardware,
         )
@@ -1312,10 +1333,7 @@ class SFTTrainerWrapper(StreamingSetupMixin):
                 raise ValueError(
                     "QuEST continuation requires a local artifact with its metadata sidecar"
                 )
-            base_identity = resolve_base_model_identity(self.config.base)
-            before = getattr(self, "_quest_base_identity_before", None)
-            if before is not None and before != base_identity:
-                raise ValueError("QuEST local base changed while the model was loading")
+            self._quest_post_load_base_identity()
             metadata = load_metadata(source)
             if declaration != metadata:
                 raise ValueError("QuEST config declaration does not match the mandatory sidecar")
@@ -1342,10 +1360,7 @@ class SFTTrainerWrapper(StreamingSetupMixin):
         ]
         calibration_sha256 = calibration_rows_sha256(calibration_rows)
         scales = calibrate_activation_scales(self.model, calibration_rows)
-        base_identity = resolve_base_model_identity(self.config.base)
-        before = getattr(self, "_quest_base_identity_before", None)
-        if before is not None and before != base_identity:
-            raise ValueError("QuEST local base changed while the model was loading")
+        base_identity = self._quest_post_load_base_identity()
         self._quest_metadata = install_mixed_quest(
             self.model,
             activation_scales=scales,
@@ -1606,10 +1621,18 @@ class SFTTrainerWrapper(StreamingSetupMixin):
             # several visible cards; this first engineering slice is explicitly
             # single-GPU and its dense Hadamard route has not been measured
             # under DDP, DataParallel, DeepSpeed or FSDP.
-            from soup_cli.utils.quest import resolve_base_model_identity, validate_cuda_hardware
+            from soup_cli.utils.quest import (
+                resolve_base_model_identity_and_snapshot,
+                validate_cuda_hardware,
+            )
 
             validate_cuda_hardware()
-            self._quest_base_identity_before = resolve_base_model_identity(cfg.base)
+            # #1199 fix 1: the only content pass over a local base. The snapshot lets
+            # the post-load check compare stat data instead of hashing it again.
+            (
+                self._quest_base_identity_before,
+                self._quest_base_snapshot,
+            ) = resolve_base_model_identity_and_snapshot(cfg.base)
 
         # Liger Kernel — apply fused ops BEFORE model loading
         if tcfg.use_liger:

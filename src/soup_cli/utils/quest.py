@@ -24,6 +24,7 @@ import ntpath
 import os
 import posixpath
 import stat
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -31,6 +32,13 @@ from typing import Any
 FORMAT_VERSION = 2
 LEGACY_FORMAT_VERSION = 1
 LOCAL_BASE_PREFIX = "local-sha256:"
+#: The local weight files ``AutoModelForCausalLM.from_pretrained`` considers, in its order.
+_WEIGHT_CANDIDATES = (
+    "model.safetensors",
+    "model.safetensors.index.json",
+    "pytorch_model.bin",
+    "pytorch_model.bin.index.json",
+)
 _LOCAL_TOKENIZER_FILES = (
     "tokenizer_config.json",
     "tokenizer.json",
@@ -168,19 +176,7 @@ def _selected_local_model_files(root: Path) -> list[tuple[str, Path]]:
         if "fast_tokenizer_files" in tokenizer_config_data:
             raise ValueError("QuEST local base fingerprint does not support fast_tokenizer_files")
 
-    selected = next(
-        (
-            name
-            for name in (
-                "model.safetensors",
-                "model.safetensors.index.json",
-                "pytorch_model.bin",
-                "pytorch_model.bin.index.json",
-            )
-            if (root / name).is_file()
-        ),
-        None,
-    )
+    selected = next((name for name in _WEIGHT_CANDIDATES if (root / name).is_file()), None)
     if selected is None:
         raise ValueError("QuEST local base has no supported model weights")
     files.append((selected, root / selected))
@@ -217,6 +213,11 @@ def _selected_local_model_files(root: Path) -> list[tuple[str, Path]]:
     return files
 
 
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    """The tuple ``_hash_local_file`` compares to call a file unchanged during its read."""
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+
+
 def _hash_local_file(path: Path) -> tuple[int, str]:
     """Hash one regular file and reject changes during the read."""
     digest = hashlib.sha256()
@@ -228,11 +229,7 @@ def _hash_local_file(path: Path) -> tuple[int, str]:
             digest.update(chunk)
         after = os.fstat(stream.fileno())
     current = path.stat()
-
-    def identity(value: os.stat_result) -> tuple[int, int, int, int]:
-        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
-
-    if identity(before) != identity(after) or identity(before) != identity(current):
+    if not _stat_identity(before) == _stat_identity(after) == _stat_identity(current):
         raise ValueError("QuEST local base changed during fingerprinting")
     return before.st_size, digest.hexdigest()
 
@@ -289,24 +286,106 @@ def _refuse_disqualifying_local_topology(config_data: dict[str, Any]) -> None:
         validate_group(width)
 
 
-def resolve_base_model_identity(source: str) -> str:
-    """Keep Hub IDs intact; replace a local directory with its loaded-file digest."""
+def _selection_shape(root: Path) -> tuple[tuple[str, ...], str | None]:
+    """What ``_selected_local_model_files`` decides by existence alone, reading no content.
+
+    The optional config / tokenizer / chat-template names that are present, in the
+    selector's order, and the weight candidate that wins. The rest of the selection
+    (the shard list) comes from file content, which the per-file stats cover.
+    """
+    optional: list[str] = []
+    if (root / "generation_config.json").is_file():
+        optional.append("generation_config.json")
+    optional.extend(name for name in _LOCAL_TOKENIZER_FILES if (root / name).is_file())
+    optional.extend(
+        f"additional_chat_templates/{template.name}"
+        for template in sorted(
+            (root / "additional_chat_templates").glob("*.jinja"), key=lambda path: path.name
+        )
+        if template.is_file()
+    )
+    weights = next((name for name in _WEIGHT_CANDIDATES if (root / name).is_file()), None)
+    return tuple(optional), weights
+
+
+def _shape_of_selected(files: list[tuple[str, Path]]) -> tuple[tuple[str, ...], str | None]:
+    """The ``_selection_shape`` a selected file list was built from."""
+    names = [name for name, _ in files]
+    weights = next(name for name in names if name in _WEIGHT_CANDIDATES)
+    return tuple(names[1 : names.index(weights)]), weights
+
+
+@dataclass(frozen=True)
+class LocalBaseSnapshot:
+    """What a local-base identity was computed from, as stat data (#1199 fix 1).
+
+    ``local_base_unchanged`` compares it after the model load instead of reading and
+    hashing every byte of the base a second time. It is a stat comparison, the same
+    ``(st_dev, st_ino, st_size, st_mtime_ns)`` tuple ``_hash_local_file`` uses: it does
+    not catch a same-size rewrite in place that also restores the modification time.
+    """
+
+    shape: tuple[tuple[str, ...], str | None]
+    files: tuple[tuple[str, tuple[int, int, int, int]], ...]
+
+
+def resolve_base_model_identity_and_snapshot(
+    source: str,
+) -> tuple[str, LocalBaseSnapshot | None]:
+    """The identity ``resolve_base_model_identity`` returns, and, for a local base, its snapshot.
+
+    A Hub ID has no snapshot: its identity is the string itself.
+    """
     if not isinstance(source, str) or not source:
         raise ValueError("QuEST base source must be a non-empty string")
     if not os.path.isdir(source):
-        return source
+        return source, None
     root = Path(os.path.realpath(source))
     _refuse_disqualifying_local_topology(_read_local_config(root))
     files = _selected_local_model_files(root)
     digest = hashlib.sha256(b"soup.quest.local-base.v2\0")
+    stats: list[tuple[str, tuple[int, int, int, int]]] = []
     for name, path in files:
+        before = _stat_identity(path.stat())
         size, file_sha256 = _hash_local_file(path)
+        if _stat_identity(path.stat()) != before:
+            raise ValueError("QuEST local base changed during fingerprinting")
+        stats.append((name, before))
         record = json.dumps([name, size, file_sha256], separators=(",", ":")).encode("utf-8")
         digest.update(len(record).to_bytes(8, "big"))
         digest.update(record)
     if os.path.realpath(source) != str(root):
         raise ValueError("QuEST local base moved during fingerprinting")
-    return LOCAL_BASE_PREFIX + digest.hexdigest()
+    snapshot = LocalBaseSnapshot(shape=_shape_of_selected(files), files=tuple(stats))
+    return LOCAL_BASE_PREFIX + digest.hexdigest(), snapshot
+
+
+def resolve_base_model_identity(source: str) -> str:
+    """Keep Hub IDs intact; replace a local directory with its loaded-file digest."""
+    return resolve_base_model_identity_and_snapshot(source)[0]
+
+
+def local_base_unchanged(source: str, snapshot: LocalBaseSnapshot) -> bool:
+    """Whether ``source`` still is the base ``snapshot`` was taken of, by stat alone.
+
+    Reads no file content: the selector would pick the same files by existence, and
+    every selected file has the stat identity it had while it was hashed. The config,
+    ``tokenizer_config.json`` and any shard index are among those files, so the shard
+    list cannot have moved without one of them changing. Another directory at the same
+    path fails on the inodes even when its bytes are the same, and a path that is no
+    longer a directory selects nothing.
+    """
+    root = Path(os.path.realpath(source))
+    if _selection_shape(root) != snapshot.shape:
+        return False
+    for name, identity in snapshot.files:
+        try:
+            current = root.joinpath(*PurePosixPath(name).parts).stat()
+        except OSError:
+            return False
+        if _stat_identity(current) != identity:
+            return False
+    return True
 
 
 def validate_scale(value: Any) -> float:
